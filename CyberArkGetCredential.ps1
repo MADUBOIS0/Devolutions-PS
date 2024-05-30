@@ -25,7 +25,7 @@ Function GetCyberArkEntry{
 
 
 #Open a CyberArk DashBoard
-Function OpenDashBoard{
+Function OpenCyberArkDashBoard{
 
     #Get the CyberArk Dashboard by calling function GetCyberArkEntry
     $DashBoardEntry = GetCyberArkEntry
