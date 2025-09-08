@@ -2,11 +2,11 @@ Import-Module Devolutions.PowerShell -RequiredVersion 2025.1.5
 
 # Environment Variables
 # URI of the DVLS Instance
-$DVLSURI = "https://dvls-02.devolutions.services"
+$DVLSURI = ""
 # App key and secret - Must be admin in DVLS
 
-$AppKey = "b3fba317-69c2-4959-a286-4c6cc29826d8"
-$AppSecret = "8AShx5kvOpPPAhFhZpcMNRYp24mXsSW8yREAdrSvw0rVNvS71Uh0vGgDAeIrCkmZ"
+$AppKey = ""
+$AppSecret = ""
 
 
 Function Connect-DVLSWithAppKey {

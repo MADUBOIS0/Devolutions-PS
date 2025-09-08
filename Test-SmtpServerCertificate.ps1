@@ -39,4 +39,4 @@ function Test-SmtpServerCertificate {
     }
 }
 
-Test-SmtpServerCertificate "dvls-02.devolutions.services" 443
+Test-SmtpServerCertificate "google.com" 443

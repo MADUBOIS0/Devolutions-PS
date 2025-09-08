@@ -1,10 +1,10 @@
 # Set API endpoint
-$uri = "https://dvls-02.devolutions.services/api/v1/login"
+$uri = ""
 
 # Prepare the JSON body with your credentials
 $body = @{
-    appKey    = "432f6098-bf27-448b-b956-647a2096976f"
-    appSecret = "0QeTTX692M8VEFxO1o8h26PwhVnoSji2GPep8DnWRnXXk2aXdxbpbZ4DqFCDQOzv"
+    appKey    = ""
+    appSecret = ""
 } | ConvertTo-Json
 
 # Set headers

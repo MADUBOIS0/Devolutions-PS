@@ -7,10 +7,10 @@ function Split-FirstLevelFolderToNewVaults{
     # ensure that both app key are admin
 
     # connect the first server
-    $DVLSName1 = "ALPHA"
-    $DVLSURI1 = "https://dvls-01.alpha.internal/"
-    $AppKey1 = "151d5792-3ed8-4dfa-871f-5d4aaaa35ea9"
-    $AppSecret1 = "iOMTrG4tjAg78Yhv4zSDqnOwgZC4XAuKW3SVvIBHhCUbsZCXAWA7kwlwv2TeXmVu"
+    $DVLSName1 = ""
+    $DVLSURI1 = ""
+    $AppKey1 = ""
+    $AppSecret1 = ""
     $SourceVault = "ParentVault"
     # Connect the second server
     $DVLSName2 = "ALPHA"

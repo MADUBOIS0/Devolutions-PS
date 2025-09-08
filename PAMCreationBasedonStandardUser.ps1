@@ -2,13 +2,13 @@ Import-Module Devolutions.PowerShell -RequiredVersion 2025.1.4
 
 # Environment Variables
 # URI of the DVLS Instance
-$DVLSURI = "https://dvls-02.devolutions.services"
+$DVLSURI = ""
 # Path of the CSV to import
 $csvPath = ""
 # App key and secret - Must be admin in DVLS
 
-$AppKey = "b3fba317-69c2-4959-a286-4c6cc29826d8"
-$AppSecret = "kMuklGlwDGPzsASq6RSa0ZRDCBYMPu4WC1xI5cYhHhTWe1fK4F11QTWrKaGmTXac"
+$AppKey = ""
+$AppSecret = ""
 
 
 Function Connect-DVLSWithAppKey {
@@ -27,7 +27,7 @@ Connect-DVLSWithAppKey
 $ListRegularUsers = Get-DSUser -All
 
 #PAM Vault ID
-$PAMVaultID = "0b818fb0-3281-44bd-983f-e98addb8157d"
+$PAMVaultID = ""
 
 #Get PAM Accounts in PAM vault.
 $PAMAccountsList = Get-DSPamAccount -VaultID $PAMVaultID
