@@ -14,13 +14,13 @@ TeamFolderID : ID of the Vault
 
 # Environment Variables
 # URI of the DVLS Instance
-$DVLSURI = ""
+$DVLSURI = "https://dvls-02.devolutions.services"
 # Path of the CSV to import
 $csvPath = ""
 # App key and secret - Must be admin in DVLS
 
-$AppKey = ""
-$AppSecret = ""
+$AppKey = "b3fba317-69c2-4959-a286-4c6cc29826d8"
+$AppSecret = "0lPyh87RMJipeDvt8btmZLfS6IeeE5nqQAhLmsqbhZil8xLgXMorfCXDffYaXm4M"
 
 
 Function Connect-DVLSWithAppKey {
