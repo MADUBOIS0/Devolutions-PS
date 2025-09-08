@@ -1,5 +1,5 @@
 #requires -Version 7
-#
+
 <#
 .SYNOPSIS
 Updates the password for a specified service account and optionally restarts the service on a remote system.
