@@ -1,5 +1,5 @@
 #requires -Version 7
-#
+
 <#
 .SYNOPSIS
 Updates the password for a specified service account and optionally restarts the service on a remote system.
@@ -32,12 +32,12 @@ Optional. Specifies the name of the service that needs the service account passw
 Optional. Specifies whether to restart the service after updating the password. Acceptable values are 'yes' to restart the service, or an empty string to leave the service running without restarting.
 
 .EXAMPLE
-PS C:\\> .\\script.ps1 -Endpoint 'server01' -EndpointUserName 'administrator' -EndpointPassword (ConvertTo-SecureString 'Passw0rd!' -AsPlainText -Force) -AccountUserName 'svc_account' -NewPassword (ConvertTo-SecureString 'N3wPassw0rd!' -AsPlainText -Force) -AccountUserNameDomain 'domain.local' -ServiceName 'MyService' -RestartService 'yes'
+PS C:\> .\script.ps1 -Endpoint 'server01' -EndpointUserName 'administrator' -EndpointPassword (ConvertTo-SecureString 'Passw0rd!' -AsPlainText -Force) -AccountUserName 'svc_account' -NewPassword (ConvertTo-SecureString 'N3wPassw0rd!' -AsPlainText -Force) -AccountUserNameDomain 'domain.local' -ServiceName 'MyService' -RestartService 'yes'
 
 This example updates the password for the 'svc_account' user on the 'domain.local' domain, specifically for 'MyService' on 'server01', and restarts the service after the update.
 
 .NOTES
-This script uses CIM for remote operations. Ensure WinRM is enabled and that the provided credentials have the necessary administrative rights on the remote system.
+This script requires PowerShell Remoting to be enabled and configured on the target endpoint. Ensure credentials provided have the necessary administrative rights on the remote system.
 #>
 [CmdletBinding()]
 param(
@@ -77,7 +77,7 @@ param(
 )
 
 # Output the script parameters and the current user running the script
-Write-Output -InputObject "Running script with parameters: $($PSBoundParameters | Out-String) as [$($env:USERNAME)]"
+Write-Output -InputObject "Running script with parameters: $($PSBoundParameters | Out-String) as [$(whoami)]"
 
 if ($AccountUserNameDomain -and $AccountUserNameDomain -notmatch '^\w+\.\w+$') {
     throw 'When using the AccountUserNameDomain parameter, you must provide the domain as an FQDN (domain.local)'
@@ -88,8 +88,8 @@ function newCredential([string]$UserName, [securestring]$Password) {
     New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $UserName, $Password
 }
 
-function testIsOnDomain([string]$ComputerName,[pscredential]$Credential) {
-    (Get-CimInstance -ClassName win32_computersystem -ComputerName $ComputerName -Credential $Credential).PartOfDomain
+function testIsOnDomain {
+    (Get-CimInstance -ClassName win32_computersystem).PartOfDomain
 }
 
 function decryptPassword {
@@ -109,15 +109,13 @@ function updateServiceUserPassword {
     param(
         $ServiceInstance,
         [string]$UserName,
-        [securestring]$Password,
-        [string]$ComputerName,
-        [pscredential]$Credential
+        [securestring]$Password
     )    
 
     Invoke-CimMethod -InputObject $ServiceInstance -MethodName Change -Arguments @{
         StartName     = $UserName
         StartPassword = decryptPassword($Password)
-    } -ComputerName $ComputerName -Credential $Credential
+    }
 }
 
 function GetServiceAccountNames {
@@ -145,8 +143,7 @@ function ValidateUserAccountPassword {
     param(
         [string]$UserName,
         [string]$Domain,
-        [securestring]$Password,
-        [string]$ComputerName
+        [securestring]$Password
     )
 
     try {
@@ -155,7 +152,7 @@ function ValidateUserAccountPassword {
         if ($Domain) {
             $context = New-Object System.DirectoryServices.AccountManagement.PrincipalContext([System.DirectoryServices.AccountManagement.ContextType]::Domain, $Domain)
         } else {
-            $context = New-Object System.DirectoryServices.AccountManagement.PrincipalContext([System.DirectoryServices.AccountManagement.ContextType]::Machine, $ComputerName)
+            $context = New-Object System.DirectoryServices.AccountManagement.PrincipalContext([System.DirectoryServices.AccountManagement.ContextType]::Machine)
         }
     
         $context.ValidateCredentials($UserName, (decryptPassword($Password)))
@@ -172,58 +169,113 @@ function ValidateUserAccountPassword {
 # Create a new PSCredential object using the provided EndpointUserName and EndpointPassword
 $credential = newCredential $EndpointUserName $EndpointPassword
 
-if ($AccountUserNameDomain -and -not (testIsOnDomain -ComputerName $Endpoint -Credential $credential)) {
-    throw "The AccountUserNameDomain parameter was used and the host is not on a domain. For local accounts, do not use the AccountUserNameDomain parameter."
-}
+# Define a script block to be executed remotely on the Windows server
+$scriptBlock = {
 
-## Ensure the password is valid
-$valUserAcctParams = @{
-    UserName     = $AccountUserName
-    Password     = $NewPassword
-    ComputerName = $Endpoint
-}
-if ($AccountUserNameDomain) {
-    $valUserAcctParams.Domain = $AccountUserNameDomain
-}
-$validatePwResult = ValidateUserAccountPassword @valUserAcctParams
-if (!$validatePwResult) {
-    throw "The password for user account [$($AccountUserName)] is invalid. Did you mean to provide a domain account? If so, use the AccountUserNameDomain parameter."
-}
+    $ErrorActionPreference = 'Stop'
 
-$getSrvAccountNamesParams = @{
-    UserName = $AccountUserName
-}
-if ($AccountUserNameDomain) {
-    $getSrvAccountNamesParams.Domain = $AccountUserNameDomain
-}
-[array]$serviceAccountNames = GetServiceAccountNames @getSrvAccountNamesParams
-$startNameCimQuery = "(StartName = '{0}')" -f ($serviceAccountNames -join "' OR StartName = '") ## (StartName = 'user@domain.local' OR StartName = 'domain\\user')
+    ## Assigning to variables inside the scriptblock allows mocking of args with Pester
+    $userName = $args[0]
+    $userDomain = $args[2]
+    $pw = $args[1]
+    $serviceNames = $args[3]
+    $restartService = $args[4]
 
-if (-not $ServiceName) {
-    $cimFilter = $startNameCimQuery
-} else {
-    $cimFilter = "(Name='{0}') AND {1}" -f ($ServiceName -split ',' -join "' OR Name='"), $startNameCimQuery
-}
-$cimFilter = $cimFilter.replace('\\', '\\\\')
+    if ($userDomain -and !(testIsOnDomain)) {
+        throw "The AccountUserNameDomain parameter was used and the host is not on a domain. For local accounts, do not use the AccountUserNameDomain parameter."
+    }
+
+    ## Ensure the password is valid
+    $valUserAcctParams = @{
+        UserName = $userName
+        Password = $pw
+    }
+    if ($userDomain) {
+        $valUserAcctParams.Domain = $userDomain
+    }
+    $validatePwResult = ValidateUserAccountPassword @valUserAcctParams
+    if (!$validatePwResult) {
+        throw "The password for user account [$($UserName)] is invalid. Did you mean to provide a domain account? If so, use the AccountUserNameDomain parameter."
+    }
+
+    $getSrvAccountNamesParams = @{
+        UserName = $userName
+    }
+    if ($userDomain) {
+        $getSrvAccountNamesParams.Domain = $userDomain
+    }
+    [array]$serviceAccountNames = GetServiceAccountNames @getSrvAccountNamesParams
+    $startNameCimQuery = "(StartName = '{0}')" -f ($serviceAccountNames -join "' OR StartName = '") ## (StartName = 'user@domain.local' OR StartName = 'domain\user')
+
+    if (-not $serviceNames) {
+        $cimFilter = $startNameCimQuery
+    } else {
+        $cimFilter = "(Name='{0}') AND {1}" -f ($serviceNames -join "' OR Name='"), $startNameCimQuery
+    }
+    $cimFilter = $cimFilter.replace('\', '\\')
     
-$serviceInstances = Get-CimInstance -ClassName Win32_Service -Filter $cimFilter -ComputerName $Endpoint -Credential $credential
-if (-not $serviceInstances) {
-    throw "No services found on [{0}] running as [{1}] could be found." -f $Endpoint, $serviceAccountNames[0]
+    $serviceInstances = Get-CimInstance -ClassName Win32_Service -Filter $cimFilter
+    if (-not $serviceInstances) {
+        throw "No services found on [{0}] running as [{1}] could be found." -f (hostname), $serviceAccountNames[0]
+    }
+
+    $results = foreach ($servInst in $serviceInstances) {
+        try {
+            $updateResult = updateServiceUserPassword -ServiceInstance $servInst -Username $serviceAccountNames[0] -Password $pw
+            if ($updateResult.ReturnValue -ne 0) {
+                throw "Password update for service [{0}] failed with return value [{1}]" -f $servInst.Name, $updateResult.ReturnValue
+            }
+            if ($restartService -eq 'yes' -and $servInst.State -eq 'Running') {
+                Restart-Service -Name $servInst.Name
+            }
+            $true
+        } catch {
+            Write-Error -Message $_.Exception.Message
+        }
+    }
+    @($results).Count -eq @($serviceInstances).Count
 }
 
-$results = foreach ($servInst in $serviceInstances) {
-    try {
-        $updateResult = updateServiceUserPassword -ServiceInstance $servInst -Username $serviceAccountNames[0] -Password $NewPassword -ComputerName $Endpoint -Credential $credential
-        if ($updateResult.ReturnValue -ne 0) {
-            throw "Password update for service [{0}] failed with return value [{1}]" -f $servInst.Name, $updateResult.ReturnValue
-        }
-        if ($RestartService -eq 'yes' -and $servInst.State -eq 'Running') {
-            Invoke-CimMethod -InputObject $servInst -MethodName StopService -ComputerName $Endpoint -Credential $credential | Out-Null
-            Invoke-CimMethod -InputObject $servInst -MethodName StartService -ComputerName $Endpoint -Credential $credential | Out-Null
-        }
-        $true
-    } catch {
-        Write-Error -Message $_.Exception.Message
+## Ensures args passed to Invoke-Command always have the same count to check inside of the scriptblock
+$icmArgsList = $AccountUserName, $NewPassword
+@('AccountUserNameDomain', 'ServiceName', 'RestartService') | ForEach-Object {
+    if ($PSBoundParameters.ContainsKey($_) -and $_ -ne 'ServiceName') {
+        $icmArgsList += $PSBoundParameters[$_]
+    } elseif ($_ -eq 'ServiceName') {
+        ## To process multiple services at once. This approach must be done because DVLS will not allow you to pass an array
+        ## of strings via a parameter.
+        $icmArgsList += $ServiceName -split ','
+    } else {
+        $icmArgsList += $null
     }
 }
-@($results).Count -eq @($serviceInstances).Count
+
+#region Create a new PSSession
+$sessParams = @{
+    ComputerName = $Endpoint
+    Credential   = $credential
+}
+$session = New-PSSession @sessParams
+#endregion
+
+#region Load all of the local functions into the PSsession
+ForEach ($func in @('decryptPassword','updateServiceUserPassword','GetServiceAccountNames','ValidateUserAccountPassword','testIsOnDomain')) {
+	$lfunctions += "function $((Get-Item Function:\$func).Name) {$((Get-Item Function:\$func).ScriptBlock)};"
+}
+
+$loadFunctionsBlock = {
+	. ([scriptblock]::Create($args[0]))
+}
+
+Invoke-Command -Session $session -ScriptBlock $loadFunctionsBlock -ArgumentList $lfunctions
+#endregion
+
+## Invoke the main code execution
+$invParams = @{
+    Session = $session
+    ScriptBlock  = $scriptBlock
+    ArgumentList = $icmArgsList
+}
+Invoke-Command @invParams
+
+$session | Remove-PSSession
