@@ -174,7 +174,7 @@ if (-not $ServiceName) {
 } else {
     $cimFilter = "(Name='{0}') AND {1}" -f (($ServiceName -split ',') -join "' OR Name='"), $startNameCimQuery
 }
-$cimFilter = $cimFilter.replace('\\', '\\')
+$cimFilter = $cimFilter.replace('\', '\\')
 
 $serviceInstances = Get-CimInstance -ClassName Win32_Service -Filter $cimFilter
 if (-not $serviceInstances) {
