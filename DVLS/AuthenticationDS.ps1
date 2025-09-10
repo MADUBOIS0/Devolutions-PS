@@ -19,14 +19,3 @@ Function Connect-DVLSWithAppKey {
     return $DSSession
 
 }
-
-Connect-DVLSWithAppkey
-
-Function GetPamAccounts{
-    $PAMAccount = Get-DSPamAccount -AccountID "1901de29-5214-4f8f-81ea-4bb954343857"
-    $PamProviders = Get-DSPamProviders
-    #$PamRotationReport = Get-DSPam
-    $var = Get-DSPamAccount -AsLegacyResponse
-    #| Where-Object {$_.Name -eq "maduboisT0"}
-    $tt
-}
