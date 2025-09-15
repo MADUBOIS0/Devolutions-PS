@@ -39,4 +39,4 @@ function Test-SmtpServerCertificate {
     }
 }
 
-Test-SmtpServerCertificate "google.com" 443
+Test-SmtpServerCertificate "windjammercorp.devolutions.app" 443
