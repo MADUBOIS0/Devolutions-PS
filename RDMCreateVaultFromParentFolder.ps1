@@ -1,30 +1,28 @@
 <#
 .SYNOPSIS
-    Creates dedicated vaults from the first-level folders of a source RDM vault using RDM cmdlets only.
+    Splits first-level folders from a source RDM vault into separate vaults using only RDM cmdlets.
 .DESCRIPTION
-    For each first-level folder found in the specified source vault, the script creates (or reuses) a destination RDM
-    vault with the same name and copies every entry contained in that folder (including subfolders) into the new vault.
-    The original folder remains untouched in the source vault. The operation relies exclusively on the
-    Devolutions.PowerShell RDM cmdlets (e.g., Get-RDMSession, New-RDMRepository).
+    For each first-level folder (ConnectionType "Group" where Name equals Group) found in the specified source vault,
+    the script exports all sessions contained in that folder (including subfolders, attachments, documentation, and
+    credentials) to a temporary .rdm file. It then switches to the destination data source, ensures that a vault with
+    the same name exists (creating it when needed), and imports the sessions. The source vault remains unchanged.
 .PARAMETER SourceVaultName
-    Name of the source RDM vault whose first-level folders should be exported.
+    Name of the source RDM vault to process.
 .PARAMETER SourceDataSourceName
-    Optional data source name that contains the source vault. Defaults to the currently selected data source.
+    Optional data source name that hosts the source vault. Defaults to the currently selected data source.
 .PARAMETER DestinationDataSourceName
-    Optional destination data source name. Defaults to the source data source when omitted.
+    Optional destination data source name. Defaults to the source data source if omitted.
 .PARAMETER TempFolder
-    Optional working directory used to store temporary export files. A unique folder under the system temporary path
-    is created when omitted.
+    Optional working directory used to store temporary export files. When omitted, a unique folder under the system
+    temp directory is created.
 .PARAMETER ExportPassword
-    Secure string password used to protect export files. A random password is generated when omitted.
+    Optional secure string password used to protect the export files. A random password is generated when omitted.
 .PARAMETER ExportPasswordPlainText
-    Convenience parameter that lets you supply the export password as plain text. The value is converted to a secure
-    string internally.
+    Optional plain text password that is converted to a secure string.
 .PARAMETER SkipExistingVaults
-    Skips folders whose destination vault already exists.
+    Skips processing for folders whose destination vault already exists.
 .PARAMETER KeepTempFiles
-    Prevents deletion of the temporary export folder.
-
+    Keeps the temporary export files on disk instead of deleting them at the end.
 .EXAMPLE
     .\RDMCreateVaultFromParentFolder.ps1 -SourceVaultName "Default" -SourceDataSourceName "Production" -Verbose
 #>
@@ -33,10 +31,10 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
-    [string]$SourceVaultName = "ACustomerVault",
+    [string]$SourceVaultName,
 
     [Parameter()]
-    [string]$SourceDataSourceName = "DVLS-02 AZ",
+    [string]$SourceDataSourceName,
 
     [Parameter()]
     [string]$DestinationDataSourceName,
@@ -63,32 +61,38 @@ function Get-RDMDataSourceOrCurrent {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [string]
+        [string]$Name
     )
 
-    if ([string]::IsNullOrWhiteSpace()) {
-         = Get-RDMCurrentDataSource
-        if (-not ) {
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        $current = Get-RDMCurrentDataSource
+        if (-not $current) {
             throw "No current RDM data source is selected. Specify SourceDataSourceName."
         }
-
-        return 
+        return $current
     }
 
-     = Get-RDMDataSource -Name 
-    if (-not ) {
-        throw "RDM data source '' was not found."
+    $ds = Get-RDMDataSource -Name $Name
+    if (-not $ds) {
+        throw "RDM data source '$Name' was not found."
     }
 
-    return 
+    return $ds
+}
+
+function Get-RDMRepositoryByName {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    return Get-RDMRepository | Where-Object { $_.Name -eq $Name } | Select-Object -First 1
 }
 
 function Ensure-Directory {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
+    param([Parameter(Mandatory = $true)][string]$Path)
 
     if (-not (Test-Path -LiteralPath $Path)) {
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
@@ -97,19 +101,12 @@ function Ensure-Directory {
 
 function Normalize-FileName {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Name
-    )
+    param([Parameter(Mandatory = $true)][string]$Name)
 
     $invalid = [System.IO.Path]::GetInvalidFileNameChars()
     $builder = New-Object System.Text.StringBuilder
     foreach ($char in $Name.ToCharArray()) {
-        if ($invalid -contains $char) {
-            [void]$builder.Append('_')
-        } else {
-            [void]$builder.Append($char)
-        }
+        if ($invalid -contains $char) { [void]$builder.Append('_') } else { [void]$builder.Append($char) }
     }
 
     $result = $builder.ToString()
@@ -129,10 +126,7 @@ function Get-TopLevelFolders {
 
 function Get-FolderSessions {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [PSObject]$Folder
-    )
+    param([Parameter(Mandatory = $true)][psobject]$Folder)
 
     $folderPath = if ([string]::IsNullOrWhiteSpace($Folder.Group)) { $Folder.Name } else { $Folder.Group }
     $prefix = $folderPath + '\\'
@@ -147,20 +141,18 @@ function Get-FolderSessions {
 function Ensure-DestinationVault {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$VaultName,
-        [Parameter(Mandatory = $true)]
-        [switch]$SkipExisting
+        [Parameter(Mandatory = $true)][string]$VaultName,
+        [Parameter()][switch]$SkipExisting
     )
 
-    $existing = Get-RDMRepository -Name $VaultName
+    $existing = Get-RDMRepositoryByName -Name $VaultName
     if ($existing) {
         if ($SkipExisting) {
             Write-Verbose "Vault '$VaultName' already exists. Skipping per SkipExistingVaults."
             return $null
         }
 
-        Write-Verbose "Vault '$VaultName' already exists. Reusing."
+        Write-Verbose "Vault '$VaultName' already exists. Reusing it."
         return $existing
     }
 
@@ -168,13 +160,15 @@ function Ensure-DestinationVault {
     return New-RDMRepository -Name $VaultName -Description "Created by RDMCreateVaultFromParentFolder" -ForcePromptAnswer Yes
 }
 
-
-
 $originalDataSource = Get-RDMCurrentDataSource
 $originalVault = Get-RDMCurrentVault
 
 $sourceDataSource = Get-RDMDataSourceOrCurrent -Name $SourceDataSourceName
-$destinationDataSource = Get-RDMDataSourceOrCurrent -Name ($DestinationDataSourceName ?? $SourceDataSourceName)
+if ([string]::IsNullOrWhiteSpace($DestinationDataSourceName)) {
+    $destinationDataSource = $sourceDataSource
+} else {
+    $destinationDataSource = Get-RDMDataSourceOrCurrent -Name $DestinationDataSourceName
+}
 
 if ($PSBoundParameters.ContainsKey('ExportPasswordPlainText')) {
     $ExportPassword = ConvertTo-SecureString -String $ExportPasswordPlainText -AsPlainText -Force
@@ -187,28 +181,24 @@ if (-not $ExportPassword) {
 }
 
 $temporaryRoot = if ([string]::IsNullOrWhiteSpace($TempFolder)) {
-    $folder = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("RDMCreateVaultFromParent_{0}" -f ([Guid]::NewGuid().ToString('N')))
-    $folder
+    Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("RDMCreateVaultFromParent_{0}" -f ([Guid]::NewGuid().ToString('N')))
 } else {
     $TempFolder
 }
-
 Ensure-Directory -Path $temporaryRoot
 $removeTempFolder = -not $KeepTempFiles
 
 $results = @()
 
 try {
-    Set-RDMCurrentDataSource $sourceDataSource | Out-Null
-    Update-RDMUI
+    Set-RDMCurrentDataSource -DataSource $sourceDataSource | Out-Null
 
-    $sourceVault = Get-RDMRepository -Name $SourceVaultName
+    $sourceVault = Get-RDMRepositoryByName -Name $SourceVaultName
     if (-not $sourceVault) {
         throw "Source vault '$SourceVaultName' was not found in data source '$($sourceDataSource.Name)'."
     }
 
     Set-RDMCurrentVault -Repository $sourceVault | Out-Null
-    Update-RDMUI
 
     $topLevelFolders = Get-TopLevelFolders
     if (-not $topLevelFolders) {
@@ -220,14 +210,12 @@ try {
         $folderName = $folder.Name
         Write-Verbose "Processing folder '$folderName'."
 
-        if (-not ($PSCmdlet.ShouldProcess("Vault '$folderName' in data source '$($destinationDataSource.Name)'", "Create or update and copy entries"))) {
+        if (-not ($PSCmdlet.ShouldProcess("Vault '$folderName' in data source '$($destinationDataSource.Name)'", "Create or update vault and copy sessions"))) {
             continue
         }
 
-        Set-RDMCurrentDataSource $sourceDataSource | Out-Null
-        Update-RDMUI
+        Set-RDMCurrentDataSource -DataSource $sourceDataSource | Out-Null
         Set-RDMCurrentVault -Repository $sourceVault | Out-Null
-        Update-RDMUI
 
         $folderSessions = Get-FolderSessions -Folder $folder
         if (-not $folderSessions) {
@@ -242,8 +230,7 @@ try {
         Write-Verbose "Exporting folder '$folderName' to '$exportPath'."
         Export-RDMSession -XML -Path $exportPath -Sessions $folderSessions -Password $ExportPassword -IncludeCredentials -IncludeAttachements -IncludeDocumentation -IncludeFavorite -ForcePromptAnswer Yes
 
-        Set-RDMCurrentDataSource $destinationDataSource | Out-Null
-        Update-RDMUI
+        Set-RDMCurrentDataSource -DataSource $destinationDataSource | Out-Null
 
         $destinationVault = Ensure-DestinationVault -VaultName $folderName -SkipExisting:$SkipExistingVaults.IsPresent
         if ($null -eq $destinationVault) {
@@ -253,7 +240,6 @@ try {
         }
 
         Set-RDMCurrentVault -Repository $destinationVault | Out-Null
-        Update-RDMUI
 
         try {
             Write-Verbose "Importing sessions from '$exportPath' into vault '$folderName'."
@@ -271,31 +257,18 @@ try {
 }
 finally {
     if ($originalDataSource) {
-        try {
-            Set-RDMCurrentDataSource $originalDataSource | Out-Null
-            Update-RDMUI
-        } catch {}
+        try { Set-RDMCurrentDataSource -DataSource $originalDataSource | Out-Null } catch {}
     }
 
     if ($originalVault) {
-        try {
-            Set-RDMCurrentVault -Repository $originalVault | Out-Null
-            Update-RDMUI
-        } catch {}
+        try { Set-RDMCurrentVault -Repository $originalVault | Out-Null } catch {}
     }
 
     if ($removeTempFolder -and (Test-Path -LiteralPath $temporaryRoot)) {
-        try {
-            Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
-        } catch {}
+        try { Remove-Item -LiteralPath $temporaryRoot -Recurse -Force } catch {}
     }
 }
 
 if ($results) {
     $results | Format-Table -AutoSize | Out-String | Write-Verbose
 }
-
-
-
-
-
