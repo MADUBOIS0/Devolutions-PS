@@ -4,23 +4,23 @@ function Split-FirstLevelFolderToNewVaults{
         [switch] $CreateRDMDatasource
     )
 
-    # ensure that both app key are admin
+    # Ensure both application keys have administrative rights
 
-    # connect the first server
-    $DVLSName1 = ""
-    $DVLSURI1 = ""
-    $AppKey1 = ""
-    $AppSecret1 = ""
-    $SourceVault = "ParentVault"
-    # Connect the second server
-    $DVLSName2 = "ALPHA"
+    # Configure the first DVLS connection
+    $DVLSName1 = "" # Name of the data source. Example: "Production"
+    $DVLSURI1 = "" # DVLS FQDN (only needed when the data source is not defined inside RDM). Example: dvls-01.mydomain.loc
+    $AppKey1 = "" # Documentation : https://docs.devolutions.net/server/web-interface/administration/security-management/applications/
+    $AppSecret1 = "" # Documentation : https://docs.devolutions.net/server/web-interface/administration/security-management/applications/
+    $SourceVault = "" # Source vault containing the clients.
+    # Parameters for the second DVLS connection
+    $DVLSName2 = $DVLSName1
     $DVLSURI2 = $DVLSURI1
     $AppKey2 = $AppKey1
     $AppSecret2 = $AppSecret1
 
-    $exportPath = "c:\temp\split\split_"
+    $exportPath = "C:\temp\"
 
-    # ensure that both datasource are accessible:
+    # Ensure both data sources are accessible:
     if ($CreateRDMDatasource){
         if ($null -eq (Get-RDMDataSource | Where-Object{$_.Name -eq "DVLS-Source"})){
             Write-Host "Creating Data Source DVLS-Source"
@@ -44,11 +44,11 @@ function Split-FirstLevelFolderToNewVaults{
     Update-RDMUI
     Set-RDMCurrentVault -Repository (Get-RDMRepository -Name $SourceVault)
 
-    # Extract FirstLevel of folders
+    # Extract first-level folders
     $1stLevel = Get-RDMSession | Where-Object{($_.ConnectionType -eq "Group") -and ($_.Name -eq $_.Group)}
     $pwd = ConvertTo-SecureString -String "abc123$" -AsPlainText -Force
 
-    # export files and vault names 
+    # Export folder data and vault names 
     if (-not $SkipExport){
         foreach($folder in $1stLevel)
         {
@@ -63,11 +63,11 @@ function Split-FirstLevelFolderToNewVaults{
     }
 
     Set-RDMCurrentDataSource -DataSource (Get-RDMDataSource -Name $DVLSName2)
-    # create target vaults and import
+    # Create target vaults and import data
     foreach ($vault in $1stLevel)
     {    
         $name = $vault.group
-        #create new vault        
+        # Create a new vault if necessary        
         $NewVault = Get-RDMRepository | where-object {$_.Name -eq "$name"}
         
         If ($null -eq $NewVault){
@@ -79,7 +79,7 @@ function Split-FirstLevelFolderToNewVaults{
         Update-RDMUI        
         Set-RDMCurrentVault -Repository (Get-RDMVault -Name "$name")
         Update-RDMUI
-        #import
+        # Import content into the target vault
         $filename = "$exportPath$name.rdm"
         write-host "Importing  $filename"
         try {
@@ -87,8 +87,18 @@ function Split-FirstLevelFolderToNewVaults{
             write-host "$filename imported"
         }
         catch {
-            <#Do this if a terminating exception happens#>
+            <#Run this block if a terminating exception occurs#>
             write-host "Error while importing $filename"            
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
