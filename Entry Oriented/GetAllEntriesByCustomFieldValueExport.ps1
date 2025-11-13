@@ -1,7 +1,8 @@
 Function GetAllEntriesByCustomFieldValueExport {
     param (
         [string]$DataSourceName = "DVLS-02 AZ",
-        [string]$CustomFieldValue = "CustomerName",
+        [ValidateSet('CustomField1Value','CustomField2Value','CustomField3Value','CustomField4Value','CustomField5Value')]
+        [string]$CustomFieldProperty = 'CustomField1Value',
         [string]$ExportPath = "C:\Temp\Export.csv"
     )
 
@@ -19,11 +20,17 @@ Function GetAllEntriesByCustomFieldValueExport {
         Set-RDMCurrentRepository -Repository $v
         Update-RDMUI
 
-        $sessions = Get-RDMSession | Where-Object { $_.MetaInformation.CustomField1Value -eq $CustomFieldValue }
+        $sessions = Get-RDMSession
         foreach ($s in $sessions) {
+            $customFieldValue = $s.MetaInformation."$CustomFieldProperty"
+            if ([string]::IsNullOrWhiteSpace($customFieldValue)) {
+                continue
+            }
+
             $results += [pscustomobject]@{
                 Name = $s.Name
-                CustomField1Value = $s.MetaInformation.CustomField1Value
+                CustomFieldName = $CustomFieldProperty
+                CustomFieldValue = $customFieldValue
             }
         }
     }
@@ -34,11 +41,11 @@ Function GetAllEntriesByCustomFieldValueExport {
     }
 
     if ($results.Count -eq 0) {
-        "Name,CustomField1Value" | Set-Content -Path $ExportPath -Encoding UTF8
-        Write-Host "No sessions matched '$CustomFieldValue'. Created empty export at $ExportPath."
+        "Name,CustomFieldName,CustomFieldValue" | Set-Content -Path $ExportPath -Encoding UTF8
+        Write-Host "No sessions contained '$CustomFieldProperty'. Created empty export at $ExportPath."
         return
     }
 
     $results | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
-    Write-Host "Exported $($results.Count) entries to $ExportPath."
+    Write-Host "Exported $($results.Count) entries containing '$CustomFieldProperty' to $ExportPath."
 }
