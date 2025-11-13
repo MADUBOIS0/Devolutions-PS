@@ -1,11 +1,26 @@
+<#
+.SYNOPSIS
+    Export all entries from one or more RDM vaults to CSV, including metadata and custom fields.
+.DESCRIPTION
+    Authenticates against a specified data source, iterates over either a single named vault or every vault,
+    gathers all entries, and exports their metadata, tags, password (when accessible), and the values of the
+    five custom fields to a CSV file.
+.PARAMETER DataSourceName
+    Name of the RDM data source to connect to before enumerating vaults.
+.PARAMETER VaultName
+    Specific vault to export; when left blank, the script processes every available vault.
+.PARAMETER ExportPath
+    Destination CSV path. The directory is created automatically if it does not exist.
+#>
 Function GetAllEntriesByCustomFieldValueExport {
     [CmdletBinding()]
     param (
-        [string]$DataSourceName = "DVLS-02 AZ",
-        [string]$VaultName = 'Testing Vault',
-        [string]$ExportPath = "C:\Temp\Export.csv"
+        [string]$DataSourceName = "DVLS-02 AZ",    # Target data source name inside RDM
+        [string]$VaultName = 'Testing Vault',      # Vault to process (blank = all vaults)
+        [string]$ExportPath = "C:\Temp\Export.csv" # Location of the generated CSV
     )
 
+    # Validate and switch to the requested data source.
     $ds = Get-RDMDataSource -Name $DataSourceName
     if (-not $ds) {
         throw "Unable to locate the data source '$DataSourceName'."
@@ -14,6 +29,7 @@ Function GetAllEntriesByCustomFieldValueExport {
     Write-Verbose "Switching to data source '$DataSourceName'."
     Set-RDMCurrentDataSource $ds
 
+    # Determine which vaults to enumerate.
     if ([string]::IsNullOrWhiteSpace($VaultName)) {
         Write-Verbose "No vault name supplied; retrieving all available vaults."
         $vaults = Get-RDMRepository
@@ -31,7 +47,7 @@ Function GetAllEntriesByCustomFieldValueExport {
         return
     }
 
-    $results = @()
+    $results = @() # Accumulator for entries from every vault.
     $canRetrievePassword = $null -ne (Get-Command -Name Get-RDMSessionPassword -ErrorAction SilentlyContinue)
     Write-Verbose ("Password retrieval command {0} present." -f ($(if ($canRetrievePassword) { "is" } else { "is not" })))
 
@@ -44,6 +60,7 @@ Function GetAllEntriesByCustomFieldValueExport {
         $sessions = Get-RDMSession
         Write-Verbose "Retrieved $($sessions.Count) sessions from '$($v.Name)'."
         foreach ($s in $sessions) {
+            # Cache custom field values so we only read MetaInformation once.
             $customFieldMap = @{
                 CustomField1Value = $s.MetaInformation.CustomField1Value
                 CustomField2Value = $s.MetaInformation.CustomField2Value
@@ -52,6 +69,7 @@ Function GetAllEntriesByCustomFieldValueExport {
                 CustomField5Value = $s.MetaInformation.CustomField5Value
             }
 
+            # Normalize tag data. Entries might expose either TagList or Tags.
             $tagSource = $null
             if ($s.PSObject.Properties.Name -contains 'TagList') {
                 $tagSource = $s.TagList
@@ -72,6 +90,7 @@ Function GetAllEntriesByCustomFieldValueExport {
                 }
             }
 
+            # Retrieve passwords only when the cmdlet exists and suppress failures.
             $password = ''
             if ($canRetrievePassword) {
                 try {
@@ -104,6 +123,7 @@ Function GetAllEntriesByCustomFieldValueExport {
 
     $exportDirectory = Split-Path -Path $ExportPath -Parent
     if (-not (Test-Path -LiteralPath $exportDirectory)) {
+        # Ensure the export folder is present.
         Write-Verbose "Creating export directory '$exportDirectory'."
         New-Item -ItemType Directory -Path $exportDirectory -Force | Out-Null
     }
