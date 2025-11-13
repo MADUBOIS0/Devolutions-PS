@@ -24,7 +24,15 @@ Function GetAllEntriesByCustomFieldValueExport {
 
         $sessions = Get-RDMSession
         foreach ($s in $sessions) {
-            $customFieldValue = $s.MetaInformation."$CustomFieldProperty"
+            $customFieldMap = @{
+                CustomField1Value = $s.MetaInformation.CustomField1Value
+                CustomField2Value = $s.MetaInformation.CustomField2Value
+                CustomField3Value = $s.MetaInformation.CustomField3Value
+                CustomField4Value = $s.MetaInformation.CustomField4Value
+                CustomField5Value = $s.MetaInformation.CustomField5Value
+            }
+
+            $customFieldValue = $customFieldMap[$CustomFieldProperty]
             if ([string]::IsNullOrWhiteSpace($customFieldValue)) {
                 continue
             }
@@ -68,8 +76,11 @@ Function GetAllEntriesByCustomFieldValueExport {
                 Folder = $s.Group
                 Tag = $tagValue
                 Password = $password
-                CustomFieldName = $CustomFieldProperty
-                CustomFieldValue = $customFieldValue
+                CustomField1Value = $customFieldMap.CustomField1Value
+                CustomField2Value = $customFieldMap.CustomField2Value
+                CustomField3Value = $customFieldMap.CustomField3Value
+                CustomField4Value = $customFieldMap.CustomField4Value
+                CustomField5Value = $customFieldMap.CustomField5Value
             }
         }
     }
@@ -80,7 +91,7 @@ Function GetAllEntriesByCustomFieldValueExport {
     }
 
     if ($results.Count -eq 0) {
-        "Name,""Entry Type"",Host,Folder,Tag,Password,CustomFieldName,CustomFieldValue" | Set-Content -Path $ExportPath -Encoding UTF8
+        "Name,""Entry Type"",Host,Folder,Tag,Password,CustomField1Value,CustomField2Value,CustomField3Value,CustomField4Value,CustomField5Value" | Set-Content -Path $ExportPath -Encoding UTF8
         Write-Host "No sessions contained '$CustomFieldProperty'. Created empty export at $ExportPath."
         return
     }
