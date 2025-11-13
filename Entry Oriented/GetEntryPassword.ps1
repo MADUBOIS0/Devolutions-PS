@@ -17,7 +17,7 @@ function GetWebsiteInformation {
     $Sessions = Get-RDMSession | Where-Object {($_.ConnectionType -eq 'WebBrowser')} #Only filter for website entries.
         ForEach ($s in $Sessions ){
             Write-Host $s.Name #Return the name of the entry
-            Write-Host (Get-RDMEntryPassword -ID $s.ID -AsPlainText) #Return the entry password.
+            Write-Host (Get-RDMSessionPassword -ID $s.ID -AsPlainText) #Return the entry password.
         }
     Update-RDMUI    
 }
