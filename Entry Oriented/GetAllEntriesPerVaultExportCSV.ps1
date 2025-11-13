@@ -2,8 +2,7 @@ Function GetAllEntriesByCustomFieldValueExport {
     [CmdletBinding()]
     param (
         [string]$DataSourceName = "DVLS-02 AZ",
-        [ValidateSet('CustomField1Value','CustomField2Value','CustomField3Value','CustomField4Value','CustomField5Value')]
-        [string]$CustomFieldProperty = 'CustomField1Value',
+        [string]$VaultName = 'Testing Vault',
         [string]$ExportPath = "C:\Temp\Export.csv"
     )
 
@@ -12,17 +11,38 @@ Function GetAllEntriesByCustomFieldValueExport {
         throw "Unable to locate the data source '$DataSourceName'."
     }
 
+    Write-Verbose "Switching to data source '$DataSourceName'."
     Set-RDMCurrentDataSource $ds
 
-    $vaults = Get-RDMRepository
+    if ([string]::IsNullOrWhiteSpace($VaultName)) {
+        Write-Verbose "No vault name supplied; retrieving all available vaults."
+        $vaults = Get-RDMRepository
+    } else {
+        Write-Verbose "Locating vault '$VaultName'."
+        $vault = Get-RDMRepository -Name $VaultName -ErrorAction SilentlyContinue
+        if (-not $vault) {
+            throw "Unable to locate the vault '$VaultName'."
+        }
+        $vaults = @($vault)
+    }
+
+    if (-not $vaults -or $vaults.Count -eq 0) {
+        Write-Verbose "No vaults returned; aborting."
+        return
+    }
+
     $results = @()
     $canRetrievePassword = $null -ne (Get-Command -Name Get-RDMSessionPassword -ErrorAction SilentlyContinue)
+    Write-Verbose ("Password retrieval command {0} present." -f ($(if ($canRetrievePassword) { "is" } else { "is not" })))
 
     foreach ($v in $vaults) {
+        Write-Verbose "Processing vault '$($v.Name)'."
         Set-RDMCurrentRepository -Repository $v
         Update-RDMUI
+        Write-Verbose "Repository context set. Gathering sessions."
 
         $sessions = Get-RDMSession
+        Write-Verbose "Retrieved $($sessions.Count) sessions from '$($v.Name)'."
         foreach ($s in $sessions) {
             $customFieldMap = @{
                 CustomField1Value = $s.MetaInformation.CustomField1Value
@@ -30,11 +50,6 @@ Function GetAllEntriesByCustomFieldValueExport {
                 CustomField3Value = $s.MetaInformation.CustomField3Value
                 CustomField4Value = $s.MetaInformation.CustomField4Value
                 CustomField5Value = $s.MetaInformation.CustomField5Value
-            }
-
-            $customFieldValue = $customFieldMap[$CustomFieldProperty]
-            if ([string]::IsNullOrWhiteSpace($customFieldValue)) {
-                continue
             }
 
             $tagSource = $null
@@ -83,19 +98,24 @@ Function GetAllEntriesByCustomFieldValueExport {
                 CustomField5Value = $customFieldMap.CustomField5Value
             }
         }
+
+        Write-Verbose "Completed vault '$($v.Name)'."
     }
 
     $exportDirectory = Split-Path -Path $ExportPath -Parent
     if (-not (Test-Path -LiteralPath $exportDirectory)) {
+        Write-Verbose "Creating export directory '$exportDirectory'."
         New-Item -ItemType Directory -Path $exportDirectory -Force | Out-Null
     }
 
     if ($results.Count -eq 0) {
+        Write-Verbose "No sessions matched criteria; writing header-only CSV."
         "Name,""Entry Type"",Host,Folder,Tag,Password,CustomField1Value,CustomField2Value,CustomField3Value,CustomField4Value,CustomField5Value" | Set-Content -Path $ExportPath -Encoding UTF8
-        Write-Host "No sessions contained '$CustomFieldProperty'. Created empty export at $ExportPath."
+        Write-Host "No sessions found in vault '$VaultName'. Created empty export at $ExportPath."
         return
     }
 
+    Write-Verbose "Exporting $($results.Count) session records to '$ExportPath'."
     $results | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
-    Write-Host "Exported $($results.Count) entries containing '$CustomFieldProperty' to $ExportPath."
+    Write-Host "Exported $($results.Count) entries from vault '$VaultName' to $ExportPath."
 }
