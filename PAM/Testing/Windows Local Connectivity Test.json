@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "template": {
+    "accountProperties": [
+      {
+        "id": "c60d66ea-1cd0-4679-bb3d-5ec85b86c90a",
+        "isMandatory": true,
+        "name": "HostName"
+      },
+      {
+        "id": "cb84dfe6-eb18-44ea-9413-8036f632462f",
+        "name": "PingSucceeded",
+        "type": 2
+      },
+      {
+        "id": "fac4cd52-8516-4aa0-8a85-764f545e0e71",
+        "name": "WinRMHttpOpen",
+        "type": 2
+      },
+      {
+        "id": "bab970ea-11b9-44f8-8833-2a482095319a",
+        "name": "WinRMSslOpen",
+        "type": 2
+      },
+      {
+        "id": "500a3cd1-0eee-4cb7-9f3a-453ae3379292",
+        "name": "AuthenticationSucceeded",
+        "type": 2
+      },
+      {
+        "id": "e054a343-bda7-4198-8277-5754d5a58d93",
+        "name": "Errors",
+        "type": 7
+      }
+    ],
+    "commands": {
+      "accountDiscovery": {
+        "command": "[CmdletBinding()]\nParam (\n\t[Parameter(Mandatory = $True)]\n\t[ValidateNotNullOrEmpty()]\n\t[String]$Hosts,\n\t[Parameter(Mandatory = $True)]\n\t[ValidateNotNullOrEmpty()]\n\t[String]$LoginUsername,\n\t[Parameter(Mandatory = $True)]\n\t[ValidateNotNullOrEmpty()]\n\t[SecureString]$LoginPassword,\n\t[Parameter(Mandatory = $False)]\n\t[Boolean]$ExcludeDisabledAccountsInDiscovery,\n\t[Parameter(Mandatory = $False)]\n\t[String]$HostsLDAPSearchFilter\n)\n\nFunction Get-ExceptionStack\n{\n\tParam ([System.Exception]$Exception)\n\n\t$Stack = New-Object System.Collections.Generic.List[string]\n\twhile ($Exception)\n\t{\n\t\t[void]$Stack.Add($Exception.ToString())\n\t\t$Exception = $Exception.InnerException\n\t}\n\n\t$Stack.ToArray()\n}\n\nFunction Add-ErrorRecordDetails\n{\n\tParam (\n\t\t[System.Collections.Generic.List[string]]$Errors,\n\t\t[String]$Context,\n\t\t[System.Management.Automation.ErrorRecord]$Record\n\t)\n\n\tFunction Normalize-ErrorText\n\t{\n\t\tParam ([String]$Text)\n\n\t\tif ([String]::IsNullOrEmpty($Text))\n\t\t{\n\t\t\treturn $Text\n\t\t}\n\n\t\treturn ($Text -replace \"(\\r\\n|\\r|\\n)\", \" | \")\n\t}\n\n\t$Prefix = \"\"\n\tif ($Context)\n\t{\n\t\t$Prefix = \"$Context \"\n\t}\n\n\tif ($Record.Exception)\n\t{\n\t\t[void]$Errors.Add(\"${Prefix}ErrorType: $($Record.Exception.GetType().FullName)\")\n\t\t[void]$Errors.Add(\"${Prefix}Message: $(Normalize-ErrorText $Record.Exception.Message)\")\n\n\t\tif ($Record.Exception.HResult)\n\t\t{\n\t\t\t[void]$Errors.Add((\"{0}HResult: 0x{1:X8}\" -f $Prefix, $Record.Exception.HResult))\n\t\t}\n\t}\n\n\tif ($Record.FullyQualifiedErrorId)\n\t{\n\t\t[void]$Errors.Add(\"${Prefix}FullyQualifiedErrorId: $($Record.FullyQualifiedErrorId)\")\n\t}\n\n\tif ($Record.CategoryInfo)\n\t{\n\t\t[void]$Errors.Add(\"${Prefix}CategoryInfo: $($Record.CategoryInfo.Category) | $($Record.CategoryInfo.Reason) | $($Record.CategoryInfo.TargetName) | $($Record.CategoryInfo.TargetType)\")\n\t}\n\n\tif ($Record.ErrorDetails -and $Record.ErrorDetails.Message)\n\t{\n\t\t[void]$Errors.Add(\"${Prefix}ErrorDetails: $(Normalize-ErrorText $Record.ErrorDetails.Message)\")\n\t}\n\n\tif ($Record.Exception)\n\t{\n\t\t$Stack = Get-ExceptionStack -Exception $Record.Exception\n\t\tforeach ($Entry in $Stack)\n\t\t{\n\t\t\t[void]$Errors.Add(\"${Prefix}Exception: $(Normalize-ErrorText $Entry)\")\n\t\t}\n\t}\n}\n\nFunction Add-NetConnectionSummary\n{\n\tParam (\n\t\t[System.Collections.Generic.List[string]]$Details,\n\t\t[String]$Label,\n\t\t$TestResult\n\t)\n\n\tif (-not $TestResult)\n\t{\n\t\t[void]$Details.Add(\"${Label}: Test-NetConnection returned no data.\")\n\t\treturn\n\t}\n\n\t$SummaryParts = New-Object System.Collections.Generic.List[string]\n\t[void]$SummaryParts.Add(\"TcpTestSucceeded=$($TestResult.TcpTestSucceeded)\")\n\n\tif ($null -ne $TestResult.RemoteAddress)\n\t{\n\t\t[void]$SummaryParts.Add(\"RemoteAddress=$($TestResult.RemoteAddress)\")\n\t}\n\tif ($null -ne $TestResult.RemotePort)\n\t{\n\t\t[void]$SummaryParts.Add(\"RemotePort=$($TestResult.RemotePort)\")\n\t}\n\tif ($null -ne $TestResult.SourceAddress)\n\t{\n\t\t[void]$SummaryParts.Add(\"SourceAddress=$($TestResult.SourceAddress)\")\n\t}\n\tif ($null -ne $TestResult.InterfaceAlias)\n\t{\n\t\t[void]$SummaryParts.Add(\"InterfaceAlias=$($TestResult.InterfaceAlias)\")\n\t}\n\tif ($null -ne $TestResult.PingSucceeded)\n\t{\n\t\t[void]$SummaryParts.Add(\"PingSucceeded=$($TestResult.PingSucceeded)\")\n\t}\n\n\t[void]$Details.Add((\"{0}: {1}\" -f $Label, ($SummaryParts -join \"; \")))\n}\n\nFunction Test-HostConnectivity\n{\n\tParam (\n\t\t[String]$Hostname,\n\t\t[PSCredential]$Credential\n\t)\n\n\t$Errors = New-Object System.Collections.Generic.List[string]\n\t$ConnectivityDetails = New-Object System.Collections.Generic.List[string]\n\t$Result = [PSCustomObject]@{\n\t\tHostName = $Hostname\n\t\tPingSucceeded = $False\n\t\tWinRMHttpOpen = $False\n\t\tWinRMSslOpen = $False\n\t\tAuthenticationSucceeded = $False\n\t\tErrors = \"\"\n\t}\n\n\ttry\n\t{\n\t\t$Resolved = [System.Net.Dns]::GetHostAddresses($Hostname)\n\t\tif ($Resolved -and $Resolved.Length -gt 0)\n\t\t{\n\t\t\t$ResolvedList = $Resolved | ForEach-Object { $_.IPAddressToString } | Sort-Object -Unique\n\t\t\t[void]$ConnectivityDetails.Add(\"DNS: \" + ($ResolvedList -join \", \"))\n\t\t}\n\t\telse\n\t\t{\n\t\t\t[void]$ConnectivityDetails.Add(\"DNS: No addresses resolved.\")\n\t\t}\n\t}\n\tcatch\n\t{\n\t\tAdd-ErrorRecordDetails -Errors $Errors -Context \"DNS\" -Record $_\n\t}\n\n\ttry\n\t{\n\t\t$PingDetails = Test-Connection -ComputerName $Hostname -Count 1 -ErrorAction Stop\n\t\t$Result.PingSucceeded = $True\n\t\tif ($PingDetails)\n\t\t{\n\t\t\t$FirstPing = $PingDetails | Select-Object -First 1\n\t\t\t[void]$ConnectivityDetails.Add(\"Ping: Success (Address=$($FirstPing.Address), ResponseTimeMs=$($FirstPing.ResponseTime))\")\n\t\t}\n\t}\n\tcatch\n\t{\n\t\t$Result.PingSucceeded = $False\n\t\tAdd-ErrorRecordDetails -Errors $Errors -Context \"Ping\" -Record $_\n\t}\n\n\t$HttpTest = Test-NetConnection -ComputerName $Hostname -Port 5985 -WarningAction SilentlyContinue\n\t$SslTest = Test-NetConnection -ComputerName $Hostname -Port 5986 -WarningAction SilentlyContinue\n\t$Result.WinRMHttpOpen = [bool]$HttpTest.TcpTestSucceeded\n\t$Result.WinRMSslOpen = [bool]$SslTest.TcpTestSucceeded\n\tAdd-NetConnectionSummary -Details $ConnectivityDetails -Label \"WinRM HTTP 5985\" -TestResult $HttpTest\n\tAdd-NetConnectionSummary -Details $ConnectivityDetails -Label \"WinRM HTTPS 5986\" -TestResult $SslTest\n\n\tif (-not ($Result.PingSucceeded -or $Result.WinRMHttpOpen -or $Result.WinRMSslOpen))\n\t{\n\t\t[void]$Errors.Add(\"No network connectivity to $Hostname (ICMP and WinRM ports 5985/5986 failed).\")\n\t\tforeach ($Detail in $ConnectivityDetails)\n\t\t{\n\t\t\t[void]$Errors.Add(\"Connectivity: $Detail\")\n\t\t}\n\t\t$Result.Errors = ($Errors.ToArray() -join \" | \")\n\t\treturn $Result\n\t}\n\n\t$Session = $null\n\ttry\n\t{\n\t\tif (Get-Command Test-WSMan -ErrorAction SilentlyContinue)\n\t\t{\n\t\t\ttry\n\t\t\t{\n\t\t\t\tif ($Result.WinRMSslOpen)\n\t\t\t\t{\n\t\t\t\t\t$Wsman = Test-WSMan -ComputerName $Hostname -UseSSL -Credential $Credential -ErrorAction Stop\n\t\t\t\t}\n\t\t\t\telse\n\t\t\t\t{\n\t\t\t\t\t$Wsman = Test-WSMan -ComputerName $Hostname -Credential $Credential -ErrorAction Stop\n\t\t\t\t}\n\t\t\t\tif ($Wsman)\n\t\t\t\t{\n\t\t\t\t\t[void]$ConnectivityDetails.Add(\"WSMan: ProtocolVersion=$($Wsman.ProtocolVersion), ProductVersion=$($Wsman.ProductVersion)\")\n\t\t\t\t}\n\t\t\t}\n\t\t\tcatch\n\t\t\t{\n\t\t\t\tAdd-ErrorRecordDetails -Errors $Errors -Context \"WSMan\" -Record $_\n\t\t\t}\n\t\t}\n\n\t\tif ($Result.WinRMSslOpen)\n\t\t{\n\t\t\t$Session = New-PSSession -ComputerName $Hostname -Credential $Credential -UseSSL -ErrorAction Stop\n\t\t}\n\t\telse\n\t\t{\n\t\t\t$Session = New-PSSession -ComputerName $Hostname -Credential $Credential -ErrorAction Stop\n\t\t}\n\n\t\tInvoke-Command -Session $Session -ScriptBlock { $env:COMPUTERNAME } -ErrorAction Stop | Out-Null\n\t\t$Result.AuthenticationSucceeded = $True\n\t}\n\tcatch\n\t{\n\t\tAdd-ErrorRecordDetails -Errors $Errors -Context \"Authentication\" -Record $_\n\t}\n\tfinally\n\t{\n\t\tif ($Session)\n\t\t{\n\t\t\t$Session | Remove-PSSession -ErrorAction SilentlyContinue\n\t\t}\n\t}\n\n\tif (-not $Result.AuthenticationSucceeded)\n\t{\n\t\tforeach ($Detail in $ConnectivityDetails)\n\t\t{\n\t\t\t[void]$Errors.Add(\"Connectivity: $Detail\")\n\t\t}\n\t}\n\n\t$Result.Errors = ($Errors.ToArray() -join \" | \")\n\treturn $Result\n}\n\nTry\n{\n\t$Credential = New-Object System.Management.Automation.PSCredential @($LoginUsername, $LoginPassword)\n\t$HostsArray = $Hosts -split \"[ ,;]\"\n\n\tSet-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process\n\tImport-Module NetTCPIP\n\n\tif (($HostsArray.Count -eq 1) -and ((Test-NetConnection $HostsArray[0] -Port 636).TcpTestSucceeded))\n\t{\n\t\t$DomainFQDN = $HostsArray[0]\n\t\t$ADSI = $null\n\n\t\tTry\n\t\t{\n\t\t\t$ADSI = New-Object System.DirectoryServices.DirectoryEntry(\"LDAP://$DomainFQDN`:636\", $Credential.UserName, $Credential.GetNetworkCredential().Password) -ErrorAction Stop\n\t\t\t[void]$ADSI.ToString()\n\t\t}\n\t\tcatch [System.Management.Automation.RuntimeException]\n\t\t{\n\t\t\tWrite-Error \"Unable to connect to $DomainFQDN\"\n\t\t}\n\t\tcatch\n\t\t{\n\t\t\tWrite-Error $error[0].Exception.ToString()\n\t\t}\n\n\t\tif ($ADSI -and ($ADSI.distinguishedName -ne \"\"))\n\t\t{\n\t\t\t$Searcher = New-Object -TypeName System.DirectoryServices.DirectorySearcher($ADSI)\n\t\t\t$Searcher.Filter = \"(&(objectclass=computer)\"\n\t\t\t$Searcher.Filter += \"(!useraccountcontrol:1.2.840.113556.1.4.804:=2)\"\n\t\t\t$Searcher.Filter += \"(!userAccountControl:1.2.840.113556.1.4.803:=8192)\"\n\t\t\t$Searcher.Filter += \"(!serviceprincipalname=*MSClusterVirtualServer*)\"\n\t\t\tif ($HostsLDAPSearchFilter)\n\t\t\t{\n\t\t\t\t$Searcher.Filter += $HostsLDAPSearchFilter\n\t\t\t}\n\t\t\t$Searcher.Filter += \")\"\n\n\t\t\t$DomainComputers = $Searcher.FindAll()\n\t\t\tif ($DomainComputers.Count -gt 0)\n\t\t\t{\n\t\t\t\t$HostsArray.Clear()\n\t\t\t\t$HostsArray = @()\n\t\t\t\tforeach ($Computer in $DomainComputers)\n\t\t\t\t{\n\t\t\t\t\t$HostsArray += $Computer.Properties['dnshostname']\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\t$Results = $HostsArray | ForEach-Object {\n\t\t$Hostname = $_.Trim()\n\n\t\tif ($Hostname -eq $null -or $Hostname -eq \"\")\n\t\t{\n\t\t\treturn\n\t\t}\n\n\t\treturn Test-HostConnectivity -Hostname $Hostname -Credential $Credential\n\t}\n\n\treturn $Results\n}\ncatch\n{\n\tWrite-Error $error[0].Exception.ToString()\n}\n",
+        "commandType": 2,
+        "id": "cb5c9097-721c-4931-beae-4e364de801c9",
+        "isActive": true,
+        "parameters": [
+          {
+            "name": "Hosts",
+            "propertyId": "26bd85da-c7ed-447a-ae92-cfd21ebd4bdc"
+          },
+          {
+            "name": "LoginUsername",
+            "propertyId": "c24049c5-9ec4-4f26-832c-86f283067c73"
+          },
+          {
+            "name": "LoginPassword",
+            "propertyId": "05799f12-c6d9-4266-94f7-42b50e3d4a6b"
+          },
+          {
+            "name": "ExcludeDisabledAccountsInDiscovery",
+            "propertyId": "e13fac46-afc4-40ee-bad3-9550674cbccf"
+          },
+          {
+            "name": "HostsLDAPSearchFilter",
+            "propertyId": "0653b613-ea47-4b3c-991f-3766fb996179"
+          }
+        ]
+      }
+    },
+    "description": "",
+    "id": "29f23bc2-580f-48f7-9523-e14819633f42",
+    "imageName": "SampleWindowsGrey",
+    "name": "Windows Local Connectivity Test",
+    "providerProperties": [
+      {
+        "id": "c24049c5-9ec4-4f26-832c-86f283067c73",
+        "isMandatory": true,
+        "name": "Username",
+        "type": 4
+      },
+      {
+        "id": "05799f12-c6d9-4266-94f7-42b50e3d4a6b",
+        "isMandatory": true,
+        "name": "Password",
+        "type": 3
+      },
+      {
+        "id": "3f35f48e-de2d-4f87-9e1d-c45beb25fb6d",
+        "name": "Description",
+        "type": 7
+      },
+      {
+        "id": "26bd85da-c7ed-447a-ae92-cfd21ebd4bdc",
+        "isMandatory": true,
+        "name": "Hosts"
+      },
+      {
+        "id": "e13fac46-afc4-40ee-bad3-9550674cbccf",
+        "name": "ExcludeDisabledAccountsInDiscovery",
+        "type": 2
+      },
+      {
+        "id": "0653b613-ea47-4b3c-991f-3766fb996179",
+        "name": "HostsLDAPSearchFilter"
+      }
+    ]
+  }
+}

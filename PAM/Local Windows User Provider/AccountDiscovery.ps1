@@ -225,17 +225,7 @@ Try
 			return
 		}
 		#Write-Output $hostname
-		If ((Test-NetConnection $Hostname -Port 5985).TcpTestSucceeded)
-		{
-			return Invoke-Command -ComputerName $Hostname -Credential $Credential -ArgumentList @($Hostname, $ExcludeDisabledAccountsInDiscovery) -ScriptBlock $ScriptBlock -ErrorAction 'Stop'
-		}
-		Else
-		{
-			If ((Test-NetConnection $Hostname -Port 5986).TcpTestSucceeded)
-			{
-				return Invoke-Command -ComputerName $Hostname -Credential $Credential -ArgumentList @($Hostname, $ExcludeDisabledAccountsInDiscovery) -ScriptBlock $ScriptBlock -UseSSL -Port 5986 -ErrorAction 'Stop'
-			}
-		}
+		return & $ScriptBlock $Hostname $ExcludeDisabledAccountsInDiscovery
 	}
 	
 	return $HostAccounts
