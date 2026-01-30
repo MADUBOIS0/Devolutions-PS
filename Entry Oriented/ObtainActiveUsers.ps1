@@ -1,24 +1,16 @@
 <#
 .SYNOPSIS
-    Export a list of Devolutions Server users with activity-based status.
+    Export a list of RDM users with activity-based status.
 .DESCRIPTION
-    Authenticates with Devolutions Server using DS cmdlets, pulls all users,
+    Uses RDM cmdlets only. Selects an existing RDM data source, pulls all users,
     exports activity logs, and derives:
       - Last entry opened date
       - Whether the user ever opened an RDP session
       - Active/Inactive status based on last entry open within a threshold
-.PARAMETER BaseUri
-    DVLS base URI (e.g., https://dvls.company.local).
+.PARAMETER DataSourceName
+    Name of the RDM data source to connect to.
 .PARAMETER ExportPath
     CSV output path for the user activity report.
-.PARAMETER AppKey
-    Application key (username) for DVLS application authentication.
-.PARAMETER AppSecret
-    Application secret (password) for DVLS application authentication.
-.PARAMETER Credential
-    PSCredential for DVLS user authentication.
-.PARAMETER WindowsAuthentication
-    Use Windows authentication for DVLS.
 .PARAMETER VaultId
     Optional Vault ID to scope activity logs.
 .PARAMETER InactiveThresholdDays
@@ -32,17 +24,9 @@
 #>
 [CmdletBinding()]
 param (
-    [Parameter(Mandatory = $true)]
-    [string]$BaseUri,
+    [string]$DataSourceName,
 
     [string]$ExportPath = "C:\Temp\ActiveUsers.csv",
-
-    [string]$AppKey,
-    [string]$AppSecret,
-
-    [System.Management.Automation.PSCredential]$Credential,
-
-    [switch]$WindowsAuthentication,
 
     [guid]$VaultId,
 
@@ -52,10 +36,23 @@ param (
 
     [bool]$RelaxedUserMatching = $true,
 
+    [bool]$TreatEntryActivityAsOpen = $true,
+
     [switch]$KeepActivityLogCsv
 )
 
 Set-StrictMode -Version Latest
+
+if ($PSBoundParameters.Count -eq 0) {
+    $DataSourceName = Read-Host "Data source name"
+
+    $exportInput = Read-Host ("Export path [{0}]" -f $ExportPath)
+    if (-not [string]::IsNullOrWhiteSpace($exportInput)) {
+        $ExportPath = $exportInput
+    }
+} elseif ([string]::IsNullOrWhiteSpace($DataSourceName)) {
+    $DataSourceName = Read-Host "Data source name"
+}
 
 function Get-FirstPropertyValue {
     param (
@@ -88,6 +85,61 @@ function Get-LogFieldValue {
     }
 
     return $null
+}
+
+function Resolve-LogColumns {
+    param (
+        [Parameter(Mandatory = $true)][string[]]$Headers,
+        [Parameter(Mandatory = $true)][string[]]$IncludePatterns,
+        [string[]]$ExcludePatterns = @()
+    )
+
+    $columns = New-Object System.Collections.Generic.List[string]
+    foreach ($header in $Headers) {
+        if ([string]::IsNullOrWhiteSpace($header)) {
+            continue
+        }
+
+        $candidate = $header.ToLowerInvariant()
+        $isExcluded = $false
+        foreach ($pattern in $ExcludePatterns) {
+            if ($candidate -match $pattern) {
+                $isExcluded = $true
+                break
+            }
+        }
+        if ($isExcluded) {
+            continue
+        }
+
+        foreach ($pattern in $IncludePatterns) {
+            if ($candidate -match $pattern) {
+                [void]$columns.Add($header)
+                break
+            }
+        }
+    }
+
+    return ,($columns.ToArray())
+}
+
+function Get-LogFieldValueWithFallback {
+    param (
+        [Parameter(Mandatory = $true)]$Row,
+        [string[]]$PreferredNames,
+        [string[]]$FallbackNames
+    )
+
+    $names = $PreferredNames
+    if (-not $names -or @($names).Count -eq 0) {
+        $names = $FallbackNames
+    }
+
+    if (-not $names -or @($names).Count -eq 0) {
+        return $null
+    }
+
+    return (Get-LogFieldValue -Row $Row -Names $names)
 }
 
 function Convert-LogDate {
@@ -136,7 +188,7 @@ function Get-NameVariants {
         }
     }
 
-    return $results
+    return ,($results.ToArray())
 }
 
 function Get-UserKeys {
@@ -148,9 +200,14 @@ function Get-UserKeys {
     $keys = New-Object System.Collections.Generic.HashSet[string]
     $candidateNames = @(
         "UserName",
+        "Username",
+        "User",
         "Login",
         "Name",
         "Email",
+        "EmailAddress",
+        "UserPrincipalName",
+        "UPN",
         "DisplayName"
     )
 
@@ -163,21 +220,70 @@ function Get-UserKeys {
         }
     }
 
-    return $keys
+    return ,([string[]]$keys)
 }
 
-function Test-OpenMessage {
-    param ([string]$Message)
+function Get-UserIdValue {
+    param ([Parameter(Mandatory = $true)]$User)
 
-    if ([string]::IsNullOrWhiteSpace($Message)) {
+    $idValue = Get-FirstPropertyValue -Object $User -Names @("ID", "Id", "UserID", "UserId", "UserGuid", "Guid")
+    if ($null -eq $idValue) {
+        return $null
+    }
+
+    $idString = $idValue.ToString().Trim()
+    if ([string]::IsNullOrWhiteSpace($idString)) {
+        return $null
+    }
+
+    return $idString.ToLowerInvariant()
+}
+
+function Get-ActivityText {
+    param (
+        [Parameter(Mandatory = $true)]$Row,
+        [string[]]$ColumnNames
+    )
+
+    $names = $ColumnNames
+    if (-not $names -or @($names).Count -eq 0) {
+        $names = @("Message", "Action", "Activity", "Event", "Event Type", "Operation", "Operation Type", "Category", "Details", "Description")
+    }
+
+    $values = @()
+    foreach ($name in $names) {
+        $value = Get-LogFieldValue -Row $Row -Names @($name)
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $values += $value.ToString()
+        }
+    }
+
+    if (-not $values -or @($values).Count -eq 0) {
+        return $null
+    }
+
+    return ($values -join " ")
+}
+
+function Test-OpenActivity {
+    param ([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $null
+    }
+
+    $positive = "(?i)\\b(open|launch|connect|start|run|execute)\\b"
+    $negative = "(?i)\\b(close|disconnect|logout|logoff|log off|end|stop|terminate|failed|error)\\b"
+
+    if ($Text -match $negative -and -not ($Text -match $positive)) {
         return $false
     }
 
-    if ($Message -match "(?i)\\bclose") {
-        return $false
+    if ($Text -match $positive) {
+        return $true
     }
 
-    return ($Message -match "(?i)\\bopen")
+    return $null
 }
 
 function Test-RdpConnectionType {
@@ -190,36 +296,41 @@ function Test-RdpConnectionType {
     return ($ConnectionType -match "(?i)rdp")
 }
 
-if (-not (Get-Command -Name New-DSSession -ErrorAction SilentlyContinue)) {
-    throw "New-DSSession cmdlet not found. Ensure the Devolutions.PowerShell module is installed and imported."
+if (-not (Get-Command -Name Get-RDMDataSource -ErrorAction SilentlyContinue)) {
+    throw "Get-RDMDataSource cmdlet not found. Ensure the Devolutions.PowerShell module is installed and imported."
+}
+
+if (-not (Get-Command -Name Set-RDMCurrentDataSource -ErrorAction SilentlyContinue)) {
+    throw "Set-RDMCurrentDataSource cmdlet not found. Ensure the Devolutions.PowerShell module is installed and imported."
+}
+
+if (-not (Get-Command -Name Get-RDMUser -ErrorAction SilentlyContinue)) {
+    throw "Get-RDMUser cmdlet not found. Ensure the Devolutions.PowerShell module is installed and imported."
 }
 
 if (-not (Get-Command -Name Export-RDMActivityLogsReport -ErrorAction SilentlyContinue)) {
     throw "Export-RDMActivityLogsReport cmdlet not found. Ensure the Devolutions.PowerShell module is installed and imported."
 }
 
-$session = $null
-if ($WindowsAuthentication) {
-    $session = New-DSSession -BaseUri $BaseUri -WindowsAuthentication
-} elseif ($AppKey -and $AppSecret) {
-    $secureSecret = ConvertTo-SecureString $AppSecret -AsPlainText -Force
-    $appCredential = New-Object System.Management.Automation.PSCredential ($AppKey, $secureSecret)
-    $session = New-DSSession -BaseUri $BaseUri -Credential $appCredential -AsApplication
-} elseif ($Credential) {
-    $session = New-DSSession -BaseUri $BaseUri -Credential $Credential
-} else {
-    throw "Provide -Credential, -WindowsAuthentication, or -AppKey/-AppSecret for DS authentication."
+if ([string]::IsNullOrWhiteSpace($DataSourceName)) {
+    throw "Data source name is required."
 }
 
-Write-Verbose "Connected to Devolutions Server at $BaseUri."
+$ds = Get-RDMDataSource -Name $DataSourceName
+if (-not $ds) {
+    throw "Unable to locate the data source '$DataSourceName'."
+}
 
-$users = Get-DSUser -All
+Set-RDMCurrentDataSource $ds
+Write-Verbose "Switched to data source '$DataSourceName'."
+
+$users = Get-RDMUser
 if ($users -and $users.PSObject.Properties.Name -contains "Data") {
     $users = $users.Data
 }
 
 if (-not $users) {
-    Write-Host "No users returned from Get-DSUser."
+    Write-Host "No users returned from Get-RDMUser."
     return
 }
 
@@ -249,30 +360,94 @@ if (-not (Test-Path -LiteralPath $activityLogPath)) {
 }
 
 $logs = Import-Csv -Path $activityLogPath
+$logs = @($logs)
+
+if ($logs.Count -eq 0) {
+    Write-Warning "No activity logs were exported for the selected time range and data source."
+}
+
+$logHeaders = @()
+if ($logs.Count -gt 0) {
+    $logHeaders = @($logs[0].PSObject.Properties.Name)
+}
+
+$logColumnMap = [ordered]@{
+    User = Resolve-LogColumns -Headers $logHeaders -IncludePatterns @("user(name)?", "login", "account", "actor", "performed by", "performedby") -ExcludePatterns @("user agent", "useragent")
+    UserId = Resolve-LogColumns -Headers $logHeaders -IncludePatterns @("user id", "userid", "user guid", "userguid", "user uuid", "useruuid")
+    Date = Resolve-LogColumns -Headers $logHeaders -IncludePatterns @("log date", "date time", "datetime", "timestamp", "date", "time", "utc") -ExcludePatterns @("created", "modified")
+    Message = Resolve-LogColumns -Headers $logHeaders -IncludePatterns @("message", "action", "activity", "event", "operation", "category", "details", "description", "info")
+    ConnectionType = Resolve-LogColumns -Headers $logHeaders -IncludePatterns @("connection type", "entry type", "session type", "protocol", "^type$") -ExcludePatterns @("operation type", "object type")
+    EntryName = Resolve-LogColumns -Headers $logHeaders -IncludePatterns @("entry name", "session name", "^entry$", "^session$", "connection", "object", "item", "target", "resource", "name")
+    EntryId = Resolve-LogColumns -Headers $logHeaders -IncludePatterns @("entry id", "session id", "entryid", "sessionid", "connectionid", "connection id", "object id", "resource id", "target id")
+}
+
+Write-Verbose ("Detected log columns: " + ($logHeaders -join ", "))
+Write-Verbose ("User columns: " + ($logColumnMap.User -join ", "))
+Write-Verbose ("UserId columns: " + ($logColumnMap.UserId -join ", "))
+Write-Verbose ("Date columns: " + ($logColumnMap.Date -join ", "))
+Write-Verbose ("Message columns: " + ($logColumnMap.Message -join ", "))
+Write-Verbose ("Connection type columns: " + ($logColumnMap.ConnectionType -join ", "))
+Write-Verbose ("Entry name columns: " + ($logColumnMap.EntryName -join ", "))
+Write-Verbose ("Entry id columns: " + ($logColumnMap.EntryId -join ", "))
 
 $lastOpenByUser = @{}
 $lastRdpByUser = @{}
+$lastOpenByUserId = @{}
+$lastRdpByUserId = @{}
 
 foreach ($row in $logs) {
-    $rawUser = Get-LogFieldValue -Row $row -Names @("User", "UserName", "Username", "User Name", "Login")
-    $message = Get-LogFieldValue -Row $row -Names @("Message")
-    $connectionType = Get-LogFieldValue -Row $row -Names @("Connection Type", "ConnectionType", "Entry Type")
-    $logDateRaw = Get-LogFieldValue -Row $row -Names @("Log Date", "LogDate", "Date", "Date/Time", "Date Time")
+    $rawUser = Get-LogFieldValueWithFallback -Row $row -PreferredNames $logColumnMap.User -FallbackNames @("User", "UserName", "Username", "User Name", "Login", "User Login", "Account")
+    $rawUserId = Get-LogFieldValueWithFallback -Row $row -PreferredNames $logColumnMap.UserId -FallbackNames @("User ID", "UserID", "User Id", "UserId", "User Guid", "UserGUID", "UserGuid")
+    $message = Get-ActivityText -Row $row -ColumnNames $logColumnMap.Message
+    $connectionType = Get-LogFieldValueWithFallback -Row $row -PreferredNames $logColumnMap.ConnectionType -FallbackNames @("Connection Type", "ConnectionType", "Entry Type")
+    $logDateRaw = Get-LogFieldValueWithFallback -Row $row -PreferredNames $logColumnMap.Date -FallbackNames @("Log Date", "LogDate", "Date", "Date/Time", "Date Time", "Timestamp", "Time", "UTC Date", "Date UTC")
     $logDate = Convert-LogDate -Value $logDateRaw
 
     if (-not $logDate) {
         continue
     }
 
+    $normalizedUserId = $null
+    if ($rawUserId) {
+        $rawUserIdValue = $rawUserId.ToString().Trim()
+        if (-not [string]::IsNullOrWhiteSpace($rawUserIdValue)) {
+            $normalizedUserId = $rawUserIdValue.ToLowerInvariant()
+        }
+    }
+
     $userKeys = Get-NameVariants -Value $rawUser -Relaxed:$RelaxedUserMatching
-    if ($userKeys.Count -eq 0) {
+    if (-not $normalizedUserId -and (-not $userKeys -or @($userKeys).Count -eq 0)) {
         continue
     }
 
-    $isOpen = Test-OpenMessage -Message $message
+    $isOpenSignal = Test-OpenActivity -Text $message
+    if ($null -ne $isOpenSignal) {
+        $isOpen = $isOpenSignal
+    } elseif ($TreatEntryActivityAsOpen) {
+        $entryName = Get-LogFieldValueWithFallback -Row $row -PreferredNames $logColumnMap.EntryName -FallbackNames @("Entry Name", "Session Name", "Entry", "Session", "Name")
+        $entryId = Get-LogFieldValueWithFallback -Row $row -PreferredNames $logColumnMap.EntryId -FallbackNames @("Entry ID", "Session ID", "EntryId", "SessionId", "ConnectionID", "ConnectionId")
+        $isOpen = (-not [string]::IsNullOrWhiteSpace($entryName)) -or (-not [string]::IsNullOrWhiteSpace($entryId))
+    } else {
+        $isOpen = $false
+    }
+
     $isRdp = $isOpen -and (Test-RdpConnectionType -ConnectionType $connectionType)
 
-    foreach ($key in $userKeys) {
+    if ($normalizedUserId) {
+        if ($isOpen) {
+            if (-not $lastOpenByUserId.ContainsKey($normalizedUserId) -or $logDate -gt $lastOpenByUserId[$normalizedUserId]) {
+                $lastOpenByUserId[$normalizedUserId] = $logDate
+            }
+        }
+
+        if ($isRdp) {
+            if (-not $lastRdpByUserId.ContainsKey($normalizedUserId) -or $logDate -gt $lastRdpByUserId[$normalizedUserId]) {
+                $lastRdpByUserId[$normalizedUserId] = $logDate
+            }
+        }
+    }
+
+    foreach ($key in @($userKeys)) {
         if ($isOpen) {
             if (-not $lastOpenByUser.ContainsKey($key) -or $logDate -gt $lastOpenByUser[$key]) {
                 $lastOpenByUser[$key] = $logDate
@@ -292,10 +467,20 @@ $results = New-Object System.Collections.Generic.List[object]
 
 foreach ($user in $users) {
     $userKeys = Get-UserKeys -User $user -Relaxed:$RelaxedUserMatching
+    $userId = Get-UserIdValue -User $user
     $lastOpen = $null
     $lastRdp = $null
 
-    foreach ($key in $userKeys) {
+    if ($userId) {
+        if ($lastOpenByUserId.ContainsKey($userId)) {
+            $lastOpen = $lastOpenByUserId[$userId]
+        }
+        if ($lastRdpByUserId.ContainsKey($userId)) {
+            $lastRdp = $lastRdpByUserId[$userId]
+        }
+    }
+
+    foreach ($key in @($userKeys)) {
         if ($lastOpenByUser.ContainsKey($key)) {
             if (-not $lastOpen -or $lastOpenByUser[$key] -gt $lastOpen) {
                 $lastOpen = $lastOpenByUser[$key]
