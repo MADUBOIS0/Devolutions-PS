@@ -582,7 +582,6 @@ foreach ($user in $users) {
         DisplayName        = (Get-FirstPropertyValue -Object $user -Names @("DisplayName", "FullName", "Name"))
         Email              = (Get-FirstPropertyValue -Object $user -Names @("Email", "EmailAddress"))
         Enabled            = (Get-FirstPropertyValue -Object $user -Names @("Enabled", "IsEnabled", "Active"))
-        LastLoginDate      = (Get-FirstPropertyValue -Object $user -Names @("LastLoginDate", "LastLogin", "LastLoginOn", "LastLoginTime", "LastLogon", "LastLogonDate"))
         LastActivityOnEntry = $lastEntryActivity
         LastRdpSessionOpen = $lastRdp
         IsActiveRdmUser    = $rdmActive
