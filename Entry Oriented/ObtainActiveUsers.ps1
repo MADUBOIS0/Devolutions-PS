@@ -4,7 +4,7 @@
 .DESCRIPTION
     Uses RDM cmdlets only. Selects an existing RDM data source, pulls all users,
     exports activity logs, and derives:
-      - Last entry opened date
+      - Last activity on an entry
       - Whether the user ever opened an RDP session
       - Active/Inactive status based on last entry open within a threshold
 .PARAMETER DataSourceName
@@ -14,7 +14,7 @@
 .PARAMETER VaultId
     Optional Vault ID to scope activity logs.
 .PARAMETER InactiveThresholdDays
-    Number of days without entry opens to consider a user inactive.
+    Number of days without entry activity to consider a user inactive.
 .PARAMETER ActivityLookbackDays
     Number of days of activity logs to export (limits how far back last opens can be found).
 .PARAMETER RelaxedUserMatching
@@ -286,6 +286,66 @@ function Test-OpenActivity {
     return $null
 }
 
+function Get-EntryActivityType {
+    param (
+        [string]$ActivityText,
+        [string]$EntryName,
+        [string]$EntryId,
+        [string]$ConnectionType
+    )
+
+    $hasEntry = (-not [string]::IsNullOrWhiteSpace($EntryName)) -or (-not [string]::IsNullOrWhiteSpace($EntryId)) -or (-not [string]::IsNullOrWhiteSpace($ConnectionType))
+    if (-not $hasEntry) {
+        return $null
+    }
+
+    $text = ""
+    if (-not [string]::IsNullOrWhiteSpace($ActivityText)) {
+        $text = $ActivityText
+    }
+
+    # Password actions
+    if ($text -match "(?i)password" -and $text -match "(?i)\\b(view|viewed|reveal|revealed|show|shown|copy|copied|checkout|check out|retrieve|retrieved|get|got)\\b") {
+        return "Viewed Password"
+    }
+
+    if ($text -match "(?i)password" -and $text -match "(?i)\\b(update|updated|change|changed|rotate|rotated|reset|resetting|set|set to)\\b") {
+        return "Changed Password"
+    }
+
+    # Folder actions
+    if ($text -match "(?i)\\bfolder\\b" -and $text -match "(?i)\\b(create|created|add|added|new)\\b") {
+        return "Created Folder"
+    }
+
+    if ($text -match "(?i)\\bfolder\\b" -and $text -match "(?i)\\b(rename|renamed|move|moved|edit|edited|modify|modified|update|updated)\\b") {
+        return "Modified Folder"
+    }
+
+    if ($text -match "(?i)\\bfolder\\b" -and $text -match "(?i)\\b(delete|deleted|remove|removed)\\b") {
+        return "Deleted Folder"
+    }
+
+    # Entry actions
+    if ($text -match "(?i)\\b(create|created|add|added|new|import|imported)\\b") {
+        return "Created Entry"
+    }
+
+    if ($text -match "(?i)\\b(update|updated|modify|modified|edit|edited|change|changed|rename|renamed|move|moved)\\b") {
+        return "Modified Entry"
+    }
+
+    if ($text -match "(?i)\\b(delete|deleted|remove|removed)\\b") {
+        return "Deleted Entry"
+    }
+
+    if ($text -match "(?i)\\b(open|opened|launch|launched|connect|connected|start|started|run|ran|execute|executed|view|viewed)\\b") {
+        return "Opened Entry"
+    }
+
+    return "Entry Activity"
+}
+
 function Test-RdpConnectionType {
     param ([string]$ConnectionType)
 
@@ -394,6 +454,8 @@ $lastOpenByUser = @{}
 $lastRdpByUser = @{}
 $lastOpenByUserId = @{}
 $lastRdpByUserId = @{}
+$lastEntryActivityByUser = @{}
+$lastEntryActivityByUserId = @{}
 
 foreach ($row in $logs) {
     $rawUser = Get-LogFieldValueWithFallback -Row $row -PreferredNames $logColumnMap.User -FallbackNames @("User", "UserName", "Username", "User Name", "Login", "User Login", "Account")
@@ -402,6 +464,8 @@ foreach ($row in $logs) {
     $connectionType = Get-LogFieldValueWithFallback -Row $row -PreferredNames $logColumnMap.ConnectionType -FallbackNames @("Connection Type", "ConnectionType", "Entry Type")
     $logDateRaw = Get-LogFieldValueWithFallback -Row $row -PreferredNames $logColumnMap.Date -FallbackNames @("Log Date", "LogDate", "Date", "Date/Time", "Date Time", "Timestamp", "Time", "UTC Date", "Date UTC")
     $logDate = Convert-LogDate -Value $logDateRaw
+    $entryName = Get-LogFieldValueWithFallback -Row $row -PreferredNames $logColumnMap.EntryName -FallbackNames @("Entry Name", "Session Name", "Entry", "Session", "Name")
+    $entryId = Get-LogFieldValueWithFallback -Row $row -PreferredNames $logColumnMap.EntryId -FallbackNames @("Entry ID", "Session ID", "EntryId", "SessionId", "ConnectionID", "ConnectionId")
 
     if (-not $logDate) {
         continue
@@ -424,8 +488,6 @@ foreach ($row in $logs) {
     if ($null -ne $isOpenSignal) {
         $isOpen = $isOpenSignal
     } elseif ($TreatEntryActivityAsOpen) {
-        $entryName = Get-LogFieldValueWithFallback -Row $row -PreferredNames $logColumnMap.EntryName -FallbackNames @("Entry Name", "Session Name", "Entry", "Session", "Name")
-        $entryId = Get-LogFieldValueWithFallback -Row $row -PreferredNames $logColumnMap.EntryId -FallbackNames @("Entry ID", "Session ID", "EntryId", "SessionId", "ConnectionID", "ConnectionId")
         $isOpen = (-not [string]::IsNullOrWhiteSpace($entryName)) -or (-not [string]::IsNullOrWhiteSpace($entryId))
     } else {
         $isOpen = $false
@@ -445,6 +507,10 @@ foreach ($row in $logs) {
                 $lastRdpByUserId[$normalizedUserId] = $logDate
             }
         }
+
+        if (-not $lastEntryActivityByUserId.ContainsKey($normalizedUserId) -or $logDate -gt $lastEntryActivityByUserId[$normalizedUserId]) {
+            $lastEntryActivityByUserId[$normalizedUserId] = $logDate
+        }
     }
 
     foreach ($key in @($userKeys)) {
@@ -459,6 +525,10 @@ foreach ($row in $logs) {
                 $lastRdpByUser[$key] = $logDate
             }
         }
+
+        if (-not $lastEntryActivityByUser.ContainsKey($key) -or $logDate -gt $lastEntryActivityByUser[$key]) {
+            $lastEntryActivityByUser[$key] = $logDate
+        }
     }
 }
 
@@ -470,6 +540,7 @@ foreach ($user in $users) {
     $userId = Get-UserIdValue -User $user
     $lastOpen = $null
     $lastRdp = $null
+    $lastEntryActivity = $null
 
     if ($userId) {
         if ($lastOpenByUserId.ContainsKey($userId)) {
@@ -477,6 +548,9 @@ foreach ($user in $users) {
         }
         if ($lastRdpByUserId.ContainsKey($userId)) {
             $lastRdp = $lastRdpByUserId[$userId]
+        }
+        if ($lastEntryActivityByUserId.ContainsKey($userId)) {
+            $lastEntryActivity = $lastEntryActivityByUserId[$userId]
         }
     }
 
@@ -492,9 +566,15 @@ foreach ($user in $users) {
                 $lastRdp = $lastRdpByUser[$key]
             }
         }
+
+        if ($lastEntryActivityByUser.ContainsKey($key)) {
+            if (-not $lastEntryActivity -or $lastEntryActivityByUser[$key] -gt $lastEntryActivity) {
+                $lastEntryActivity = $lastEntryActivityByUser[$key]
+            }
+        }
     }
 
-    $status = if (-not $lastOpen -or $lastOpen -lt $inactiveCutoff) { "Inactive" } else { "Active" }
+    $status = if (-not $lastEntryActivity -or $lastEntryActivity -lt $inactiveCutoff) { "Inactive" } else { "Active" }
     $rdmActive = $null -ne $lastRdp
 
     $results.Add([pscustomobject][ordered]@{
@@ -502,7 +582,8 @@ foreach ($user in $users) {
         DisplayName        = (Get-FirstPropertyValue -Object $user -Names @("DisplayName", "FullName", "Name"))
         Email              = (Get-FirstPropertyValue -Object $user -Names @("Email", "EmailAddress"))
         Enabled            = (Get-FirstPropertyValue -Object $user -Names @("Enabled", "IsEnabled", "Active"))
-        LastEntryOpen      = $lastOpen
+        LastLoginDate      = (Get-FirstPropertyValue -Object $user -Names @("LastLoginDate", "LastLogin", "LastLoginOn", "LastLoginTime", "LastLogon", "LastLogonDate"))
+        LastActivityOnEntry = $lastEntryActivity
         LastRdpSessionOpen = $lastRdp
         IsActiveRdmUser    = $rdmActive
         Status             = $status
